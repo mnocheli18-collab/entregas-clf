@@ -60,6 +60,17 @@ window.CONFIG = {
   .muted{color:var(--muted)}
   .st-ok{color:var(--ok);font-weight:600;white-space:nowrap}
   .st-pend{color:var(--warn);font-weight:600;white-space:nowrap}
+  .lista{list-style:none;margin:0 0 10px;padding:0}
+  .lista li{margin-top:8px}
+  .lista button{width:100%;text-align:left;background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:10px;padding:12px;font:inherit}
+  .lista button:active{border-color:var(--pri)}
+  .lista .t{font-weight:700;font-size:16px}
+  .lista .d{font-size:14px;margin-top:2px}
+  .lista .e{font-size:13px;color:var(--muted);margin-top:2px}
+  .lista .go{float:right;color:var(--pri);font-weight:700;font-size:14px}
+  .sel{display:none;background:color-mix(in srgb,var(--pri) 12%,transparent);border:1px solid var(--pri);border-radius:10px;padding:10px 12px;margin-top:12px;font-size:14px}
+  .sel b{display:block;font-size:16px}
+  .sel button{margin-top:8px;background:transparent;border:0;color:var(--pri);font-weight:700;padding:0;font-size:14px}
 </style>
 </head>
 <body>
@@ -71,6 +82,13 @@ window.CONFIG = {
   <div class="pend" id="pend">
     <b id="pendTxt"></b>
     <button class="btn sec" id="retry">Tentar enviar agora</button>
+  </div>
+
+  <div class="card" id="pendCard" style="display:none">
+    <h2>🚚 Entregas da viagem <span id="pendPlaca" class="muted"></span></h2>
+    <p class="muted" id="pendInfo" style="font-size:13px;margin:0"></p>
+    <ul class="lista" id="lista"></ul>
+    <button type="button" class="btn sec" id="atualizar">Atualizar lista</button>
   </div>
 
   <form class="card" id="form" autocomplete="off">
@@ -98,6 +116,8 @@ window.CONFIG = {
     </div>
     <label for="obs">Observação</label>
     <textarea id="obs" placeholder="Ex: recebido por João, avaria na caixa…"></textarea>
+
+    <div class="sel" id="sel"><span id="selTxt"></span><button type="button" id="selLimpar">✕ Não é esta entrega (preencher manualmente)</button></div>
 
     <label class="photo-btn">
       <input type="file" id="foto" accept="image/*" capture="environment">
@@ -307,6 +327,7 @@ window.CONFIG = {
       token: C.TOKEN, id: item.id,
       motorista: item.motorista, placa: item.placa, cpf: item.cpf, origem: "Site terceiro", nf: item.nf, cliente: item.cliente, obs: item.obs,
       fotoEmMs: item.fotoEmMs,
+      chaveMdfe: item.chaveMdfe || "", serieCte: item.serieCte || "", numeroCte: item.numeroCte || "", nfs: item.nfs || "",
       imagem: item.dataUrl.split(",")[1]
     };
     const ctrl = new AbortController();
@@ -370,6 +391,10 @@ window.CONFIG = {
     if (!atual) return;
     const d = atual.dados;
     const item = { id: novoId(), ...d, fotoEmMs: atual.quando.getTime(), dataUrl: atual.dataUrl };
+    if (selecionado && d.nf === selecionado.numero){
+      Object.assign(item, { chaveMdfe: selecionado.chave, serieCte: selecionado.serie, numeroCte: selecionado.numero, nfs: selecionado.nfs });
+    }
+    const entregue = item.numeroCte ? selecionado : null;
     const btn = $("enviarBtn");
     btn.disabled = true; btn.textContent = "Enviando…";
     try {
@@ -383,6 +408,8 @@ window.CONFIG = {
     histUpsert({ id: item.id, nf: item.nf, fotoEmMs: item.fotoEmMs, ok: false });
 
     // limpa para a próxima entrega
+    if (entregue){ marcarFeito(entregue); renderLista(ultimaLista); }
+    limparSelecao();
     atual = null;
     $("nf").value = ""; $("cliente").value = ""; $("obs").value = "";
     $("preview").style.display = "none";
@@ -391,10 +418,97 @@ window.CONFIG = {
 
     await processarFila();
     const pendente = (await filaAll()).some(x => x.id === item.id);
-    if (pendente) showMsg(`Comprovante da NF ${item.nf} salvo no celular. Será enviado quando houver internet.`, "info");
-    else showMsg(`✅ Comprovante da NF ${item.nf} enviado — ${fmt(new Date(item.fotoEmMs))}`, "ok");
+    if (pendente) showMsg(`Comprovante ${item.numeroCte ? "do CT-e " + item.numeroCte : "da NF " + item.nf} salvo no celular. Será enviado quando houver internet.`, "info");
+    else showMsg(`✅ Comprovante ${item.numeroCte ? "do CT-e " + item.numeroCte : "da NF " + item.nf} enviado — ${fmt(new Date(item.fotoEmMs))}`, "ok");
     btn.textContent = "Enviar comprovante";
   });
+
+  // ---------------- lista de entregas da viagem ----------------
+  let selecionado = null;
+  const normPlaca = v => String(v || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+  const chaveItem = it => it.chave + "|" + it.serie + "-" + it.numero;
+  let ultimaLista = [];
+
+  function marcarFeito(it){
+    const f = ls.get("feitos", []);
+    f.push(chaveItem(it));
+    ls.set("feitos", f.slice(-300));
+  }
+
+  function renderLista(itens, aviso){
+    const feitos = new Set(ls.get("feitos", []));
+    const pend = (itens || []).filter(it => !feitos.has(chaveItem(it)));
+    ultimaLista = itens || [];
+    const ul = $("lista"); ul.replaceChildren();
+    $("pendInfo").textContent = aviso || (pend.length
+      ? `${pend.length} entrega(s) pendente(s). Toque na entrega que você está fazendo.`
+      : "Nenhuma entrega pendente para esta placa.");
+    for (const it of pend){
+      const li = document.createElement("li");
+      const b = document.createElement("button"); b.type = "button";
+      const go = document.createElement("span"); go.className = "go"; go.textContent = "Entregar ›";
+      const t = document.createElement("div"); t.className = "t"; t.textContent = `CT-e ${it.numero}`;
+      const d = document.createElement("div"); d.className = "d"; d.textContent = it.destinatario || "-";
+      const e = document.createElement("div"); e.className = "e";
+      e.textContent = [it.endereco, it.nfs ? "NF " + it.nfs : "", it.volumes ? it.volumes + " vol." : "", "Manifesto " + it.manifesto].filter(Boolean).join(" • ");
+      b.append(go, t, d, e);
+      b.onclick = () => selecionar(it);
+      li.append(b); ul.append(li);
+    }
+  }
+
+  function selecionar(it){
+    selecionado = it;
+    $("nf").value = it.numero;
+    $("cliente").value = it.destinatario || "";
+    $("selTxt").replaceChildren();
+    const b = document.createElement("b"); b.textContent = `Entregando CT-e ${it.numero}`;
+    $("selTxt").append(b, document.createTextNode(`${it.destinatario || ""}${it.nfs ? " — NF " + it.nfs : ""}`));
+    $("sel").style.display = "block";
+    atual = null; $("preview").style.display = "none"; $("enviarBtn").disabled = true;
+    $("photoLabel").textContent = "Tirar foto do comprovante";
+    clearMsg();
+    $("sel").scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+  function limparSelecao(){
+    selecionado = null; $("sel").style.display = "none";
+  }
+  $("selLimpar").onclick = () => { limparSelecao(); $("nf").value = ""; $("cliente").value = ""; $("nf").focus(); };
+  $("nf").addEventListener("input", () => { if (selecionado && $("nf").value.trim() !== selecionado.numero) limparSelecao(); });
+
+  let carregando = false;
+  async function carregarLista(){
+    const placa = normPlaca($("placa").value);
+    if (placa.length < 7 || !configurado){ $("pendCard").style.display = "none"; return; }
+    $("pendCard").style.display = "block";
+    $("pendPlaca").textContent = "— " + placa;
+    const cache = ls.get("lista_" + placa, null);
+    if (cache) renderLista(cache);
+    else $("pendInfo").textContent = "Carregando…";
+    if (carregando) return;
+    carregando = true;
+    try {
+      const url = C.URL_SCRIPT + "?acao=pendentes&placa=" + encodeURIComponent(placa) + "&token=" + encodeURIComponent(C.TOKEN);
+      const r = await fetch(url, { redirect: "follow" });
+      const j = await r.json();
+      if (!j.ok) throw new Error(j.erro || "erro");
+      // remove marcas locais de CT-es que o servidor já não lista (já baixados)
+      const noServidor = new Set(j.itens.map(chaveItem));
+      const naFila = new Set((await filaAll().catch(() => [])).filter(x => x.chaveMdfe).map(x => x.chaveMdfe + "|" + x.serieCte + "-" + x.numeroCte));
+      ls.set("feitos", ls.get("feitos", []).filter(k => noServidor.has(k) || naFila.has(k)));
+      ls.set("lista_" + placa, j.itens);
+      renderLista(j.itens);
+    } catch {
+      renderLista(cache || [], cache ? "Sem internet: mostrando a última lista salva." : "Sem internet para carregar a lista. Você pode preencher a entrega manualmente abaixo.");
+    }
+    carregando = false;
+  }
+  $("atualizar").onclick = carregarLista;
+  let tPlaca = null;
+  $("placa").addEventListener("input", () => { clearTimeout(tPlaca); tPlaca = setTimeout(carregarLista, 700); });
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) carregarLista(); });
+  window.addEventListener("online", carregarLista);
+  carregarLista();
 
   renderHist();
   atualizarPendentes().then(n => { if (n) processarFila(); });
