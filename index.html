@@ -68,6 +68,8 @@ window.CONFIG = {
   .lista .d{font-size:14px;margin-top:2px}
   .lista .e{font-size:13px;color:var(--muted);margin-top:2px}
   .lista .go{float:right;color:var(--pri);font-weight:700;font-size:14px}
+  .cond{display:none;background:color-mix(in srgb,var(--ok) 12%,transparent);border-radius:10px;padding:10px 12px;margin-bottom:4px;font-size:14px}
+  .cond button{margin:8px 8px 0 0;background:var(--card);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:8px 10px;font:inherit;font-size:14px}
   .sel{display:none;background:color-mix(in srgb,var(--pri) 12%,transparent);border:1px solid var(--pri);border-radius:10px;padding:10px 12px;margin-top:12px;font-size:14px}
   .sel b{display:block;font-size:16px}
   .sel button{margin-top:8px;background:transparent;border:0;color:var(--pri);font-weight:700;padding:0;font-size:14px}
@@ -92,6 +94,7 @@ window.CONFIG = {
   </div>
 
   <form class="card" id="form" autocomplete="off">
+    <div class="cond" id="condBox"></div>
     <label for="motorista">Nome completo *</label>
     <input id="motorista" required autocomplete="name" placeholder="Seu nome completo">
     <div class="row">
@@ -435,7 +438,57 @@ window.CONFIG = {
     ls.set("feitos", f.slice(-300));
   }
 
+  // ---------- nome/CPF do condutor vindos do manifesto ----------
+  const temCpf = !!document.getElementById("cpf");
+  const fmtCpf = v => { const d = String(v || "").replace(/\D/g, ""); return d.length === 11 ? `${d.slice(0,3)}.${d.slice(3,6)}.${d.slice(6,9)}-${d.slice(9)}` : v || ""; };
+  function aplicarCond(c, forcar){
+    const auto = ls.get("autoCond", null);
+    const nomeAtual = $("motorista").value.trim();
+    const podeNome = forcar || !nomeAtual || (auto && nomeAtual === auto.nome);
+    if (!podeNome) return false;
+    $("motorista").value = c.nome;
+    if (temCpf){
+      const cpfAtual = $("cpf").value.trim();
+      if (forcar || !cpfAtual || (auto && cpfAtual === auto.cpf)) $("cpf").value = fmtCpf(c.cpf);
+    }
+    ls.set("autoCond", { nome: c.nome, cpf: fmtCpf(c.cpf) });
+    ls.set("motorista", $("motorista").value);
+    if (temCpf) ls.set("cpf", $("cpf").value);
+    return true;
+  }
+  function preencherCondutor(itens){
+    const box = $("condBox");
+    const mapa = new Map();
+    (itens || []).forEach(it => {
+      const nomes = String(it.motorista || "").split("/").map(x => x.trim());
+      const cpfs = String(it.cpfMotorista || "").split("/").map(x => x.trim());
+      nomes.forEach((n, i) => { if (n) mapa.set(cpfs[i] || n, { nome: n, cpf: cpfs[i] || "" }); });
+    });
+    const conds = [...mapa.values()];
+    box.replaceChildren(); box.style.display = "none";
+    if (!conds.length) return;
+    if (conds.length === 1){
+      aplicarCond(conds[0]);
+      if ($("motorista").value.trim().toUpperCase() === conds[0].nome.toUpperCase()){
+        box.textContent = temCpf ? "✓ Nome e CPF preenchidos pelo manifesto." : "✓ Nome preenchido pelo manifesto.";
+        box.style.display = "block";
+        return;
+      }
+    }
+    // vários condutores, ou o nome digitado é diferente do manifesto: deixa escolher
+    box.append(document.createTextNode(conds.length > 1 ? "Quem está dirigindo? (condutores do manifesto)" : "O manifesto desta placa está em nome de:"));
+    box.append(document.createElement("br"));
+    conds.forEach(c => {
+      const b = document.createElement("button"); b.type = "button";
+      b.textContent = c.nome + (temCpf && c.cpf ? " — " + fmtCpf(c.cpf) : "");
+      b.onclick = () => { aplicarCond(c, true); box.replaceChildren(document.createTextNode("✓ Dados do condutor preenchidos pelo manifesto.")); };
+      box.append(b);
+    });
+    box.style.display = "block";
+  }
+
   function renderLista(itens, aviso){
+    preencherCondutor(itens);
     const feitos = new Set(ls.get("feitos", []));
     const pend = (itens || []).filter(it => !feitos.has(chaveItem(it)));
     ultimaLista = itens || [];
